@@ -12,7 +12,7 @@ use any_spawner::Executor;
 use futures::{channel::oneshot, select, FutureExt};
 use send_wrapper::SendWrapper;
 use std::{
-    future::Future,
+    future::{pending, Future},
     ops::{Deref, DerefMut},
     panic::Location,
     pin::Pin,
@@ -376,18 +376,20 @@ where
         F: Fn(&I) -> Fu + 'static,
         Fu: Future<Output = O> + 'static,
     {
-        let owner = Owner::current().unwrap_or_default();
-        let action_fn = SendWrapper::new(action_fn);
+        #[cfg(feature = "hydration")]
+        let action_fn = Some(action_fn);
+        #[cfg(not(feature = "hydration"))]
+        let action_fn = None;
+        let action_fn = SendOption::new_local(action_fn);
         ArcAction {
             in_flight: ArcRwSignal::new(0),
             input: ArcRwSignal::new(SendOption::new_local(None)),
             value: ArcRwSignal::new(SendOption::new_local(value)),
             version: Default::default(),
             dispatched: Default::default(),
-            action_fn: Arc::new(move |input| {
-                Box::pin(SendWrapper::new(owner.with(|| {
-                    ScopedFuture::new_untracked(untrack(|| action_fn(input)))
-                })))
+            action_fn: Arc::new(move |input| match action_fn.as_ref() {
+                Some(action_fn) => Box::pin(SendWrapper::new(action_fn(input))),
+                None => Box::pin(pending()),
             }),
             #[cfg(any(debug_assertions, leptos_debuginfo))]
             defined_at: Location::caller(),
